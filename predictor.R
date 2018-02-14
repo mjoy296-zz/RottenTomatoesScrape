@@ -1,22 +1,22 @@
-library(dplyr)
 library(stringr)
 library(caret)
 library(readr)
-library(RANN)
 library(data.table)
-library(tidyr)
 library(randomForest)
 library(Boruta)
-library(uwIntroStats)
+library(plotly)
+library(usdm)
+library(dplyr)
 
 options(scipen=999)
-
+setwd("C:/Users/mjoy/RTScrape")
+#read in datasets 
 RTtotal <- read_csv("RTtotal.csv")
 mdb <- read.csv("movies.csv")
 
+#merge datasets to fill in NAs for box_office profits
 r <- RTtotal %>%
   filter(., is.na(box_office))
-
 
 m <- merge(r, mdb, by = "titles")
 m$total <- m$box_office.y * 1000000
@@ -38,28 +38,38 @@ RTtotal2$box_office <- ifelse((is.na(RTtotal2$box_office)) &
 RTtotal2$total <- NULL
 RTtotal2[RTtotal2$box_office == ""] <- NA
 namest <- c("actor1", "actor2", "actor3")
+
+#get dataframe with values of box office that are missing 
 rttotal2 <- RTtotal2 %>%
   select(., -one_of(namest)) %>%
   mutate(., genre = word(RTtotal2$genre, 1),
          mp_rating = word(RTtotal2$mp_rating, 1)) %>%
   filter(., !is.na(box_office))
 
+
 rttotal2$genre <- gsub(",", "",rttotal2$genre)
 rttotal2$mp_rating <- as.factor(rttotal2$mp_rating)
 rttotal2$genre <- as.factor(rttotal2$genre)
 
-rttotal2$box_office <- as.numeric(rttotal2$box_office)
-rttotal2 <- rttotal2 %>%
-  mutate(., interval = ifelse(rttotal2$box_office <= 302188, 1,
-                              ifelse((rttotal2$box_office > 302188) & (rttotal2$box_office <= 2341226), 2,
-                                     ifelse((rttotal2$box_office > 2341226) & (rttotal2$box_office <= 42785549), 3, 
-                                            ifelse((rttotal2$box_office > 42785549) & (rttotal2$box_office <= 61349516), 4, 
-                                                   ifelse((rttotal2$box_office>  61349516) & (rttotal2$box_office <= 936658640), 5, 6))))) )
+#Exploratory Analysis
+# get only numeric columns to look at correlation
+rttotal <- sapply(rttotal2, is.numeric)
+rttotal <- rttotal2[ ,rttotal]
+rttotal$interval <- NULL
+vifcor(rttotal) #check for colinearity
+mod <- lm(box_office ~ ., rttotal2)
+plot(mod)
 
+
+# gen <- rttotal2 %>%
+#   group_by(., genre) %>%
+#   summarise(., Total = length(genre))
+# plot_ly(rttotal,x = ~year ,y = ~box_office, 
+#         type = "heatmap")
 rt_train <- rttotal2
 rt_train$year <- NULL
-#rt_train$box_office <- NULL
-#impute na and address multicoliniearity 
+
+#impute na 
 preproc <- preProcess(rt_train, method = c("knnImpute","center",
                                            "scale"))
 rt_proc <- predict(preproc, rt_train)
@@ -68,12 +78,11 @@ sum(is.na(rt_proc))
 
 titles <- rt_proc$titles
 rt_proc$titles <- NULL
-#rt_train$interval <- as.factor(rt_train$interval)
 
 dmy <- dummyVars(" ~ .", data = rt_proc,fullRank = T)
 rt_transform <- data.frame(predict(dmy, newdata = rt_proc))
 
-index <- createDataPartition(rt_transform$interval, p =.75, list = FALSE)
+index <- createDataPartition(rt_transform$box_office, p =.75, list = FALSE)
 train_m <- rt_transform[index, ]
 rt_test <- rt_transform[-index, ]
 str(rt_train)           
@@ -82,11 +91,10 @@ y_train <- train_m$box_office
 y_test <-rt_test$box_office
 
 
-train_m$box_office <- NULL
 rt_test$box_office <- NULL
 
 #selected feature attributes
-boruta.train <- Boruta(interval~., train_m, doTrace =1)
+boruta.train <- Boruta(box_office~., train_m, doTrace =1)
 
 #graph to see most important var to interval
 lz<-lapply(1:ncol(boruta.train$ImpHistory),function(i)
@@ -127,15 +135,39 @@ model_lm <- train(train_m[,predictors],
 model_lm #.568
 # 
 plot(model_lm)
- plot(model_lm)
+
 z <- varImp(object=model_lm)
 z <- setDT(z, keep.rownames =  TRUE)
 z$model <- NULL
 z$calledFrom <- NULL
-row.names(z)
 plot(varImp(object=model_lm),main="Linear Model Variable Importance")
+z <- varImp(object=model_lm)
+imp <- z[["importance"]]
+imp <- as.data.frame(imp)
+row <- as.vector(rownames(imp))
+imp$feat <- row
+imp$Overall <- (as.vector(imp$Overall))
+imp$Overall <- sort(imp$Overall)
+imp$feat <- sort(imp$feat)
+m <- list(
+  l = 200,
+  #r = 50,
+  #b = 100,
+  pad = 4
+)
 
-predictions<-predict.train(object=model_lm,rt_test[,predictors],type="raw")
+plot_ly(imp) %>%
+  add_trace(x = ~Overall, y = ~feat, type = 'bar',
+            marker = list(color = 'rgb(58,200,225)',
+                          line = list(color = 'rgb(8,48,107)',
+                                      width = 1.5))) %>%
+  layout(autosize = F, width = 800, height = 400, margin = m,
+         yaxis = list(
+                      title = "Attribute"),
+         title = "Linear Model Important Attributtes")
+
+
+ predictions<-predict.train(object=model_lm,rt_test[,predictors],type="raw")
 table(predictions)
 
 #get coeff
@@ -144,8 +176,6 @@ slope <- coef(model_lm$finalModel)
 ggplot(data = rt_train, aes(y = box_office)) +
   geom_point() +
   geom_abline(slope = slope, intercept = interc, color = 'red')
+   
 
 
-
-rfv <- summary(RTtotal2)
-getModelInfo("lm", regex = TRUE)[[1]]$param
